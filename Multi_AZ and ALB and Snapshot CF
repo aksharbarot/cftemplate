@@ -1,0 +1,937 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'This AWS CloudFormation Template, Version
+  1.0 ,This static content webserver loadbalanced in Multi_AZ with auto scaling ,
+  the ALB access logs are stored in S3 buckets ,SNS trigger notifications via email
+  when any instance terminated or newly launched when application state is unhealthy
+  ,take daily snapshots of EBS volumes that belong to EC2 and store in s3 bucket and
+  cleanup 7 days older snapshot '
+Parameters:
+  OperatorEMail:
+    Description: EMail address to notify if there are any scaling operations
+    Type: String
+    AllowedPattern: "([a-zA-Z0-9_\\-\\.]+)@((\\[[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.)|(([a-zA-Z0-9\\-]+\\.)+))([a-zA-Z]{2,4}|[0-9]{1,3})(\\]?)"
+    ConstraintDescription: must be a valid email address.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VpcId of your existing Virtual Private Cloud (VPC)
+    ConstraintDescription: must be the VPC Id of an existing Virtual Private Cloud.
+  Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: The list of SubnetIds in your Virtual Private Cloud (VPC)
+    ConstraintDescription: must be a list of at least two existing subnets associated
+      with at least two different availability zones. They should be residing in the
+      selected Virtual Private Cloud.
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  DefaultBackupRetentionDays:
+    Description: The default number of days EBS volume snapshots are kept. You can override this per-instance with the Retention tag.
+    Type: String
+    Default: 7
+  ELBScheme:
+    Description: LoadBalancer scheme. Internal or internet-facing.
+    Type: String
+    Default: internet-facing
+    AllowedValues:
+    - internet-facing
+    - internal
+  ELBSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: The list of SubnetIds in your Virtual Private Cloud (VPC) for LoadBalancer
+    ConstraintDescription: must be a list of at least two existing subnets associated
+      with at least two different availability zones. They should be residing in the
+      selected Virtual Private Cloud.
+  InstanceType:
+    Description: WebServer EC2 instance type
+    Type: String
+    Default: t2.small
+    AllowedValues:
+    - t1.micro
+    - t2.nano
+    - t2.micro
+    - t2.small
+    - t2.medium
+    - t2.large
+    - m1.small
+    - m1.medium
+    - m1.large
+    - m1.xlarge
+    - m2.xlarge
+    - m2.2xlarge
+    - m2.4xlarge
+    - m3.medium
+    - m3.large
+    - m3.xlarge
+    - m3.2xlarge
+    - m4.large
+    - m4.xlarge
+    - m4.2xlarge
+    - m4.4xlarge
+    - m4.10xlarge
+    - c1.medium
+    - c1.xlarge
+    - c3.large
+    - c3.xlarge
+    - c3.2xlarge
+    - c3.4xlarge
+    - c3.8xlarge
+    - c4.large
+    - c4.xlarge
+    - c4.2xlarge
+    - c4.4xlarge
+    - c4.8xlarge
+    - g2.2xlarge
+    - g2.8xlarge
+    - r3.large
+    - r3.xlarge
+    - r3.2xlarge
+    - r3.4xlarge
+    - r3.8xlarge
+    - i2.xlarge
+    - i2.2xlarge
+    - i2.4xlarge
+    - i2.8xlarge
+    - d2.xlarge
+    - d2.2xlarge
+    - d2.4xlarge
+    - d2.8xlarge
+    - hi1.4xlarge
+    - hs1.8xlarge
+    - cr1.8xlarge
+    - cc2.8xlarge
+    - cg1.4xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+  WebServerCapacity:
+    Default: '1'
+    Description: The initial number of WebServer instances
+    Type: Number
+    MinValue: '1'
+    MaxValue: '5'
+    ConstraintDescription: must be between 1 and 5 EC2 instances.
+Mappings:
+  AWSInstanceType2Arch:
+    t1.micro:
+      Arch: PV64
+    t2.nano:
+      Arch: HVM64
+    t2.micro:
+      Arch: HVM64
+    t2.small:
+      Arch: HVM64
+    t2.medium:
+      Arch: HVM64
+    t2.large:
+      Arch: HVM64
+    m1.small:
+      Arch: PV64
+    m1.medium:
+      Arch: PV64
+    m1.large:
+      Arch: PV64
+    m1.xlarge:
+      Arch: PV64
+    m2.xlarge:
+      Arch: PV64
+    m2.2xlarge:
+      Arch: PV64
+    m2.4xlarge:
+      Arch: PV64
+    m3.medium:
+      Arch: HVM64
+    m3.large:
+      Arch: HVM64
+    m3.xlarge:
+      Arch: HVM64
+    m3.2xlarge:
+      Arch: HVM64
+    m4.large:
+      Arch: HVM64
+    m4.xlarge:
+      Arch: HVM64
+    m4.2xlarge:
+      Arch: HVM64
+    m4.4xlarge:
+      Arch: HVM64
+    m4.10xlarge:
+      Arch: HVM64
+    c1.medium:
+      Arch: PV64
+    c1.xlarge:
+      Arch: PV64
+    c3.large:
+      Arch: HVM64
+    c3.xlarge:
+      Arch: HVM64
+    c3.2xlarge:
+      Arch: HVM64
+    c3.4xlarge:
+      Arch: HVM64
+    c3.8xlarge:
+      Arch: HVM64
+    c4.large:
+      Arch: HVM64
+    c4.xlarge:
+      Arch: HVM64
+    c4.2xlarge:
+      Arch: HVM64
+    c4.4xlarge:
+      Arch: HVM64
+    c4.8xlarge:
+      Arch: HVM64
+    g2.2xlarge:
+      Arch: HVMG2
+    g2.8xlarge:
+      Arch: HVMG2
+    r3.large:
+      Arch: HVM64
+    r3.xlarge:
+      Arch: HVM64
+    r3.2xlarge:
+      Arch: HVM64
+    r3.4xlarge:
+      Arch: HVM64
+    r3.8xlarge:
+      Arch: HVM64
+    i2.xlarge:
+      Arch: HVM64
+    i2.2xlarge:
+      Arch: HVM64
+    i2.4xlarge:
+      Arch: HVM64
+    i2.8xlarge:
+      Arch: HVM64
+    d2.xlarge:
+      Arch: HVM64
+    d2.2xlarge:
+      Arch: HVM64
+    d2.4xlarge:
+      Arch: HVM64
+    d2.8xlarge:
+      Arch: HVM64
+    hi1.4xlarge:
+      Arch: HVM64
+    hs1.8xlarge:
+      Arch: HVM64
+    cr1.8xlarge:
+      Arch: HVM64
+    cc2.8xlarge:
+      Arch: HVM64
+  Region2ARNPrefix:
+    us-east-1:
+      ARNPrefix: 'arn:aws:'
+    us-west-1:
+      ARNPrefix: 'arn:aws:'
+    us-west-2:
+      ARNPrefix: 'arn:aws:'
+    eu-west-1:
+      ARNPrefix: 'arn:aws:'
+    eu-west-2:
+      ARNPrefix: 'arn:aws:'
+    eu-west-3:
+      ARNPrefix: 'arn:aws:'
+    ap-northeast-1:
+      ARNPrefix: 'arn:aws:'
+    ap-northeast-2:
+      ARNPrefix: 'arn:aws:'
+    ap-northeast-3:
+      ARNPrefix: 'arn:aws:'
+    ap-southeast-1:
+      ARNPrefix: 'arn:aws:'
+    ap-southeast-2:
+      ARNPrefix: 'arn:aws:'
+    ap-south-1:
+      ARNPrefix: 'arn:aws:'
+    us-east-2:
+      ARNPrefix: 'arn:aws:'
+    ca-central-1:
+      ARNPrefix: 'arn:aws:'
+    sa-east-1:
+      ARNPrefix: 'arn:aws:'
+    cn-north-1:
+      ARNPrefix: 'arn:aws-cn:'
+    cn-northwest-1:
+      ARNPrefix: 'arn:aws-cn:'
+    eu-central-1:
+      ARNPrefix: 'arn:aws:'
+  Region2ELBAccountId:
+    us-east-1:
+      AccountId: '127311923021'
+    us-west-1:
+      AccountId: 027434742980
+    us-west-2:
+      AccountId: '797873946194'
+    eu-west-1:
+      AccountId: '156460612806'
+    eu-west-2:
+      AccountId: '652711504416'
+    eu-west-3:
+      AccountId: 009996457667
+    ap-northeast-1:
+      AccountId: '582318560864'
+    ap-northeast-2:
+      AccountId: '600734575887'
+    ap-northeast-3:
+      AccountId: '383597477331'
+    ap-southeast-1:
+      AccountId: '114774131450'
+    ap-southeast-2:
+      AccountId: '783225319266'
+    ap-south-1:
+      AccountId: '718504428378'
+    us-east-2:
+      AccountId: 033677994240
+    ca-central-1:
+      AccountId: '985666609251'
+    sa-east-1:
+      AccountId: '507241528517'
+    cn-north-1:
+      AccountId: '638102146993'
+    cn-northwest-1:
+      AccountId: '037604701340'
+    eu-central-1:
+      AccountId: 054676820928
+  AWSInstanceType2NATArch:
+    t1.micro:
+      Arch: NATPV64
+    t2.nano:
+      Arch: NATHVM64
+    t2.micro:
+      Arch: NATHVM64
+    t2.small:
+      Arch: NATHVM64
+    t2.medium:
+      Arch: NATHVM64
+    t2.large:
+      Arch: NATHVM64
+    m1.small:
+      Arch: NATPV64
+    m1.medium:
+      Arch: NATPV64
+    m1.large:
+      Arch: NATPV64
+    m1.xlarge:
+      Arch: NATPV64
+    m2.xlarge:
+      Arch: NATPV64
+    m2.2xlarge:
+      Arch: NATPV64
+    m2.4xlarge:
+      Arch: NATPV64
+    m3.medium:
+      Arch: NATHVM64
+    m3.large:
+      Arch: NATHVM64
+    m3.xlarge:
+      Arch: NATHVM64
+    m3.2xlarge:
+      Arch: NATHVM64
+    m4.large:
+      Arch: NATHVM64
+    m4.xlarge:
+      Arch: NATHVM64
+    m4.2xlarge:
+      Arch: NATHVM64
+    m4.4xlarge:
+      Arch: NATHVM64
+    m4.10xlarge:
+      Arch: NATHVM64
+    c1.medium:
+      Arch: NATPV64
+    c1.xlarge:
+      Arch: NATPV64
+    c3.large:
+      Arch: NATHVM64
+    c3.xlarge:
+      Arch: NATHVM64
+    c3.2xlarge:
+      Arch: NATHVM64
+    c3.4xlarge:
+      Arch: NATHVM64
+    c3.8xlarge:
+      Arch: NATHVM64
+    c4.large:
+      Arch: NATHVM64
+    c4.xlarge:
+      Arch: NATHVM64
+    c4.2xlarge:
+      Arch: NATHVM64
+    c4.4xlarge:
+      Arch: NATHVM64
+    c4.8xlarge:
+      Arch: NATHVM64
+    g2.2xlarge:
+      Arch: NATHVMG2
+    g2.8xlarge:
+      Arch: NATHVMG2
+    r3.large:
+      Arch: NATHVM64
+    r3.xlarge:
+      Arch: NATHVM64
+    r3.2xlarge:
+      Arch: NATHVM64
+    r3.4xlarge:
+      Arch: NATHVM64
+    r3.8xlarge:
+      Arch: NATHVM64
+    i2.xlarge:
+      Arch: NATHVM64
+    i2.2xlarge:
+      Arch: NATHVM64
+    i2.4xlarge:
+      Arch: NATHVM64
+    i2.8xlarge:
+      Arch: NATHVM64
+    d2.xlarge:
+      Arch: NATHVM64
+    d2.2xlarge:
+      Arch: NATHVM64
+    d2.4xlarge:
+      Arch: NATHVM64
+    d2.8xlarge:
+      Arch: NATHVM64
+    hi1.4xlarge:
+      Arch: NATHVM64
+    hs1.8xlarge:
+      Arch: NATHVM64
+    cr1.8xlarge:
+      Arch: NATHVM64
+    cc2.8xlarge:
+      Arch: NATHVM64
+  AWSRegionArch2AMI:
+    us-east-1:
+      PV64: ami-2a69aa47
+      HVM64: ami-97785bed
+      HVMG2: ami-0a6e3770
+    us-west-2:
+      PV64: ami-7f77b31f
+      HVM64: ami-f2d3638a
+      HVMG2: ami-ee15a196
+    us-west-1:
+      PV64: ami-a2490dc2
+      HVM64: ami-824c4ee2
+      HVMG2: ami-0da4a46d
+    eu-west-1:
+      PV64: ami-4cdd453f
+      HVM64: ami-d834aba1
+      HVMG2: ami-af8013d6
+    eu-west-2:
+      PV64: NOT_SUPPORTED
+      HVM64: ami-403e2524
+      HVMG2: NOT_SUPPORTED
+    eu-west-3:
+      PV64: NOT_SUPPORTED
+      HVM64: ami-8ee056f3
+      HVMG2: NOT_SUPPORTED
+    eu-central-1:
+      PV64: ami-6527cf0a
+      HVM64: ami-5652ce39
+      HVMG2: ami-1d58ca72
+    ap-northeast-1:
+      PV64: ami-3e42b65f
+      HVM64: ami-ceafcba8
+      HVMG2: ami-edfd658b
+    ap-northeast-2:
+      PV64: NOT_SUPPORTED
+      HVM64: ami-863090e8
+      HVMG2: NOT_SUPPORTED
+    ap-northeast-3:
+      PV64: NOT_SUPPORTED
+      HVM64: ami-83444afe
+      HVMG2: NOT_SUPPORTED
+    ap-southeast-1:
+      PV64: ami-df9e4cbc
+      HVM64: ami-68097514
+      HVMG2: ami-c06013bc
+    ap-southeast-2:
+      PV64: ami-63351d00
+      HVM64: ami-942dd1f6
+      HVMG2: ami-85ef12e7
+    ap-south-1:
+      PV64: NOT_SUPPORTED
+      HVM64: ami-531a4c3c
+      HVMG2: ami-411e492e
+    us-east-2:
+      PV64: NOT_SUPPORTED
+      HVM64: ami-f63b1193
+      HVMG2: NOT_SUPPORTED
+    ca-central-1:
+      PV64: NOT_SUPPORTED
+      HVM64: ami-a954d1cd
+      HVMG2: NOT_SUPPORTED
+    sa-east-1:
+      PV64: ami-1ad34676
+      HVM64: ami-84175ae8
+      HVMG2: NOT_SUPPORTED
+    cn-north-1:
+      PV64: ami-77559f1a
+      HVM64: ami-cb19c4a6
+      HVMG2: NOT_SUPPORTED
+    cn-northwest-1:
+      PV64: ami-80707be2
+      HVM64: ami-3e60745c
+      HVMG2: NOT_SUPPORTED
+Resources:
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+      - Endpoint:
+          Ref: OperatorEMail
+        Protocol: email
+    Metadata:
+      AWS::CloudFormation::Designer:
+        id: eefdf171-9252-4589-a67d-5d6175d1a850
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme:
+        Ref: ELBScheme
+      Subnets:
+        Ref: ELBSubnets
+      LoadBalancerAttributes:
+      - Key: access_logs.s3.enabled
+        Value: 'true'
+      - Key: access_logs.s3.bucket
+        Value:
+          Ref: LogsBucket
+      - Key: access_logs.s3.prefix
+        Value: Logs
+      SecurityGroups:
+      - Ref: WebServerSecurityGroup
+    DependsOn: LogsBucketPolicy
+    Metadata:
+      AWS::CloudFormation::Designer:
+        id: 99942ab4-2e72-40e7-aba5-379dde0803ac
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn:
+          Ref: ALBTargetGroup
+      LoadBalancerArn:
+        Ref: ApplicationLoadBalancer
+      Port: '80'
+      Protocol: HTTP
+    Metadata:
+      AWS::CloudFormation::Designer:
+        id: 667d6615-95be-4523-847e-9e6ba1841069
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckPath: "/"
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Ref: VpcId
+      TargetGroupAttributes:
+      - Key: stickiness.enabled
+        Value: 'true'
+      - Key: stickiness.type
+        Value: lb_cookie
+      - Key: stickiness.lb_cookie.duration_seconds
+        Value: '30'
+    Metadata:
+      AWS::CloudFormation::Designer:
+        id: 476203f8-f9ac-4292-9a5f-e6a53a72bd03
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access via port 80 locked down to the load balancer
+        + SSH access
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp:
+          Ref: SSHLocation
+      VpcId:
+        Ref: VpcId
+    Metadata:
+      AWS::CloudFormation::Designer:
+        id: af25c7ed-e133-4a3f-949d-50da941d75a7
+  LogsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Metadata:
+      AWS::CloudFormation::Designer:
+        id: 4724810b-7226-498d-bb71-b663a1a9273a
+  LogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: LogsBucket
+      PolicyDocument:
+        Version: '2008-10-17'
+        Statement:
+        - Sid: ELBAccessLogs20130930
+          Effect: Allow
+          Resource:
+            Fn::Join:
+            - ''
+            - - Fn::FindInMap:
+                - Region2ARNPrefix
+                - Ref: AWS::Region
+                - ARNPrefix
+              - 's3:::'
+              - Ref: LogsBucket
+              - "/"
+              - Logs
+              - "/AWSLogs/"
+              - Ref: AWS::AccountId
+              - "/*"
+          Principal:
+            AWS:
+              Fn::FindInMap:
+              - Region2ELBAccountId
+              - Ref: AWS::Region
+              - AccountId
+          Action:
+          - s3:PutObject
+    Metadata:
+      AWS::CloudFormation::Designer:
+        id: f462e946-4f36-4c55-90a6-eff455a53c04
+  WebServerGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        Ref: Subnets
+      LaunchConfigurationName:
+        Ref: LaunchConfig
+      MinSize: '1'
+      MaxSize: '5'
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: '300'
+      NotificationConfigurations:
+      - TopicARN:
+          Ref: NotificationTopic
+        NotificationTypes:
+        - autoscaling:EC2_INSTANCE_LAUNCH
+        - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+        - autoscaling:EC2_INSTANCE_TERMINATE
+        - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+      DesiredCapacity:
+        Ref: WebServerCapacity
+      TargetGroupARNs:
+      - Ref: ALBTargetGroup
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: '1'
+        MaxBatchSize: '1'
+        PauseTime: PT15M
+        WaitOnResourceSignals: 'true'
+    Metadata:
+      AWS::CloudFormation::Designer:
+        id: f235e418-6d83-4b25-a860-193b387cd200
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          wordpress_install:
+          - install_cfn
+          - install_httpd
+        install_cfn:
+          files:
+            "/etc/cfn/cfn-hup.conf":
+              content:
+                Fn::Join:
+                - ''
+                - - "[main]\n"
+                  - stack=
+                  - Ref: AWS::StackId
+                  - "\n"
+                  - region=
+                  - Ref: AWS::Region
+                  - "\n"
+              mode: '000400'
+              owner: root
+              group: root
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              content:
+                Fn::Join:
+                - ''
+                - - "[cfn-auto-reloader-hook]\n"
+                  - 'triggers=post.update
+
+'
+                  - 'path=Resources.LaunchConfig.Metadata.AWS::CloudFormation::Init
+
+'
+                  - 'action=/opt/aws/bin/cfn-init -v '
+                  - "         --stack "
+                  - Ref: AWS::StackName
+                  - "         --resource LaunchConfig "
+                  - "         --configsets wordpress_install "
+                  - "         --region "
+                  - Ref: AWS::Region
+                  - "\n"
+              mode: '000400'
+              owner: root
+              group: root
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: 'true'
+                ensureRunning: 'true'
+                files:
+                - "/etc/cfn/cfn-hup.conf"
+                - "/etc/cfn/hooks.d/cfn-auto-reloader.conf"
+        install_httpd:
+          packages:
+            yum:
+              httpd: []
+          files:
+            "/var/www/html/index.html":
+              content:
+                Fn::Join:
+                - ''
+                - - "<HTML><HEAD><TITLE>Test Head Page</TITLE></HEAD>"
+                  - "<BODY><H2>Test Head Page</H2><P>OK</P></BODY></HTML>"
+              mode: '000644'
+              owner: root
+              group: root
+          services:
+            sysvinit:
+              httpd:
+                enabled: 'true'
+                ensureRunning: 'true'
+      AWS::CloudFormation::Designer:
+        id: 054bc91f-d965-4082-ab2c-803ae28a72b4
+    Properties:
+      ImageId:
+        Fn::FindInMap:
+        - AWSRegionArch2AMI
+        - Ref: AWS::Region
+        - Fn::FindInMap:
+          - AWSInstanceType2Arch
+          - Ref: InstanceType
+          - Arch
+      InstanceType:
+        Ref: InstanceType
+      SecurityGroups:
+      - Ref: WebServerSecurityGroup
+      KeyName:
+        Ref: KeyName
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+          - ''
+          - - "#!/bin/bash -xe\n"
+            - 'yum update -y aws-cfn-bootstrap'
+            - "/opt/aws/bin/cfn-init -v "
+            - "         --stack "
+            - Ref: AWS::StackName
+            - "         --resource LaunchConfig "
+            - "         --configsets wordpress_install "
+            - "         --region "
+            - Ref: AWS::Region
+            - "\n"
+            - "/opt/aws/bin/cfn-signal -e $? "
+            - "         --stack "
+            - Ref: AWS::StackName
+            - "         --resource WebServerGroup "
+            - "         --region "
+            - Ref: AWS::Region
+            - "\n"
+
+  SnapshotLambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: SnapshotIAMRolePolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+              - logs:*
+              Resource: "arn:aws:logs:*:*:*"
+            - Effect: Allow
+              Action:
+              - ec2:Describe*
+              Resource: "*"
+            - Effect: Allow
+              Action:
+              - ec2:CreateSnapshot
+              - ec2:DeleteSnapshot
+              - ec2:CreateTags
+              - ec2:ModifySnapshotAttribute
+              - ec2:ResetSnapshotAttribute
+              Resource: "*"
+      Path: "/"
+  SnapshotCreationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "A Lambda function that creates snapshots of EBS volumes"
+      Handler: index.lambda_handler
+      Runtime: python2.7
+      Timeout: '180'
+      Role: !GetAtt SnapshotLambdaIAMRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import collections
+          import datetime
+          ec = boto3.client('ec2')
+          def lambda_handler(event, context):
+              reservations = ec.describe_instances(
+                  Filters=[
+                      {'Name': 'tag-key', 'Values': ['backup', 'Backup']},
+                  ]
+              ).get(
+                  'Reservations', []
+              )
+              instances = sum(
+                  [
+                      [i for i in r['Instances']]
+                      for r in reservations
+                  ], [])
+              print "Found %d instances that need backing up" % len(instances)
+              to_tag = collections.defaultdict(list)
+              for instance in instances:
+                  try:
+                      retention_days = [
+                          int(t.get('Value')) for t in instance['Tags']
+                          if t['Key'] == 'Retention'][0]
+                  except IndexError:
+                      retention_days = ${DefaultBackupRetentionDays}
+                  for dev in instance['BlockDeviceMappings']:
+                      if dev.get('Ebs', None) is None:
+                          continue
+                      vol_id = dev['Ebs']['VolumeId']
+                      print "Found EBS volume %s on instance %s" % (
+                          vol_id, instance['InstanceId'])
+                      snap = ec.create_snapshot(
+                          VolumeId=vol_id,
+                      )
+                      to_tag[retention_days].append(snap['SnapshotId'])
+                      print "Retaining snapshot %s of volume %s from instance %s for %d days" % (
+                          snap['SnapshotId'],
+                          vol_id,
+                          instance['InstanceId'],
+                          retention_days,
+                      )
+              for retention_days in to_tag.keys():
+                  delete_date = datetime.date.today() + datetime.timedelta(days=retention_days)
+                  delete_fmt = delete_date.strftime('%Y-%m-%d')
+                  print "Will delete %d snapshots on %s" % (len(to_tag[retention_days]), delete_fmt)
+                  ec.create_tags(
+                      Resources=to_tag[retention_days],
+                      Tags=[
+                          {'Key': 'DeleteOn', 'Value': delete_fmt},
+                      ]
+                  )
+  SnapshotCleanupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "A Lambda function that cleans up snapshots at their Retention date"
+      Handler: index.lambda_handler
+      Runtime: python2.7
+      Timeout: '180'
+      Role: !GetAtt SnapshotLambdaIAMRole.Arn
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          import re
+          import datetime
+          ec = boto3.client('ec2')
+          def lambda_handler(event, context):
+              account_ids = ['${AWS::AccountId}']
+              delete_on = datetime.date.today().strftime('%Y-%m-%d')
+              filters = [
+                  {'Name': 'tag-key', 'Values': ['DeleteOn']},
+                  {'Name': 'tag-value', 'Values': [delete_on]},
+              ]
+              snapshot_response = ec.describe_snapshots(OwnerIds=account_ids, Filters=filters)
+              for snap in snapshot_response['Snapshots']:
+                  print "Deleting snapshot %s" % snap['SnapshotId']
+                  ec.delete_snapshot(SnapshotId=snap['SnapshotId'])
+  # Run the snapshot Lambda functions every day
+  SnapshotCreationScheduleRule:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Description: "Run the EBS snapshot creation script daily"
+      Name: "SnapshotCreationScheduleRule"
+      ScheduleExpression: "cron(0 3 * * ? *)"
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt SnapshotCreationFunction.Arn
+          Id: 'SnapshotCreationFunction'
+
+  # Permissions to Lambda functions to be run from CloudWatch events
+  PermissionForEventsToInvokeCreationLambda:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref SnapshotCreationFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt SnapshotCreationScheduleRule.Arn
+
+  # Run the snapshot Lambda functions every day
+  SnapshotCleanupScheduleRule:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Description: "Run the EBS snapshot cleanup script daily"
+      Name: "SnapshotCleanupScheduleRule"
+      ScheduleExpression: "cron(0 3 * * ? *)"
+      State: "ENABLED"
+      Targets:
+        - Arn: !GetAtt SnapshotCleanupFunction.Arn
+          Id: 'SnapshotCleanupFunction'
+
+  PermissionForEventsToInvokeCleanupLambda:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref SnapshotCleanupFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt SnapshotCleanupScheduleRule.Arn
+      
+Outputs:
+  WebsiteURL:
+    Value:
+      Fn::Join:
+      - ''
+      - - http://
+        - Fn::GetAtt:
+          - ApplicationLoadBalancer
+          - DNSName
+    Description: Static Website
+  ELBAccessLogsBucket:
+    Description: DNS name of the S3 bucket storing ELB Access Logs
+    Value:
+      Fn::GetAtt:
+      - LogsBucket
+      - DomainName
