@@ -1,0 +1,187 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+    Circular dependency between Security Groups
+Parameters:
+
+  AKVPC:
+    Description: "VPC to launch instances into"
+    Type: "AWS::EC2::VPC::Id"
+
+
+Resources:
+## Security Group
+  SecGroup1:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties: 
+      VpcId: !Ref "AKVPC"
+      GroupDescription: "SecGroup1"
+  SecGroup1Ingress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "443"
+        IpProtocol: "tcp"
+        SourceSecurityGroupId:
+          Ref: "OrSecGroup3"
+        ToPort: "443"
+        GroupId:
+          Ref: "SecGroup1"
+  SecGroup1Ingress1:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "1443"
+        IpProtocol: "tcp"
+        SourceSecurityGroupId:
+          Ref: "RDSSecGroup2"
+        ToPort: "1443"
+        GroupId:
+          Ref: "SecGroup1"
+  SecGroup1Ingress2:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "-1"
+        IpProtocol: "-1"
+        SourceSecurityGroupId:
+          Ref: "SecGroup1"
+        ToPort: "-1"
+        GroupId:
+          Ref: "SecGroup1"
+  SecGroup1Egress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+        IpProtocol: '-1'
+        CidrIp: '0.0.0.0/0'
+        GroupId:
+          Ref: "SecGroup1"
+
+# Allow RDS connection.
+  RDSSecGroup2:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      VpcId: !Ref "AKVPC"
+      GroupDescription: "RDS Sec2"
+  RDSSecGroup2Egress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+        IpProtocol: "-1"
+        CidrIp: "0.0.0.0/0"
+        GroupId:
+          Ref: "RDSSecGroup2"
+  RDSSecGroup2Ingress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "1433"
+        IpProtocol: "tcp"
+        SourceSecurityGroupId:
+          Ref: "SecGroup1"        
+        ToPort: "1433"
+        GroupId:
+          Ref: "RDSSecGroup2"
+  RDSSecGroup2Ingress1:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "1433"
+        IpProtocol: "tcp"
+        SourceSecurityGroupId:
+          Ref: "OrSecGroup3"        
+        ToPort: "1433"
+        GroupId:
+          Ref: "RDSSecGroup2"
+  RDSSecGroup2Ingress2:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "-1"
+        IpProtocol: "-1"
+        SourceSecurityGroupId:
+          Ref: "RDSSecGroup2"
+        ToPort: "-1"
+        GroupId:
+          Ref: "RDSSecGroup2"
+
+# Security Group for Orchestrator
+  OrSecGroup3:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Or Sec3"
+      VpcId: !Ref "AKVPC"
+  OrSecGroup3Egress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+        IpProtocol: "-1"
+        CidrIp: "0.0.0.0/0"
+        GroupId:
+          Ref: "OrSecGroup3"
+  OrSecGroup3Ingress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "433"
+        IpProtocol: "tcp"
+        SourceSecurityGroupId:
+          Ref: "SecGroup1"        
+        ToPort: "433"
+        GroupId:
+          Ref: "OrSecGroup3"
+  OrSecGroup3Ingress1:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "1433"
+        IpProtocol: "tcp"
+        SourceSecurityGroupId:
+          Ref: "RDSSecGroup2"        
+        ToPort: "1433"
+        GroupId:
+          Ref: "OrSecGroup3"
+  OrSecGroup3Ingress2:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "-1"
+        IpProtocol: "-1"
+        SourceSecurityGroupId:
+          Ref: "OrSecGroup3"
+        ToPort: "-1"
+        GroupId:
+          Ref: "OrSecGroup3"
+
+# Redis security group
+  RedSecGroup4:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties: 
+      VpcId: !Ref "AKVPC"
+      GroupDescription: "Red Sec4"
+  RedSecGroup4Ingress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "9200"
+        IpProtocol: "tcp"
+        SourceSecurityGroupId:
+          Ref: "SecGroup1" 
+        GroupId:
+          Ref: "RedSecGroup4"          
+        ToPort: "9200"
+  RedSecGroup4Ingress1:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "9200"
+        IpProtocol: "tcp"
+        SourceSecurityGroupId:
+          Ref: "OrSecGroup3"        
+        ToPort: "9200"
+        GroupId:
+          Ref: "RedSecGroup4"
+  RedSecGroup4Ingress2:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        FromPort: "-1"
+        IpProtocol: "-1"
+        SourceSecurityGroupId:
+          Ref: "RedSecGroup4"
+        ToPort: "-1"
+        GroupId:
+          Ref: "RedSecGroup4"
+  RedSecGroup4Egress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+        IpProtocol: '-1'
+        CidrIp: '0.0.0.0/0'
+        GroupId:
+          Ref: "RedSecGroup4"
