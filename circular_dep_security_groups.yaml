@@ -98,7 +98,7 @@ Resources:
         GroupId:
           Ref: "RDSSecGroup2"
 
-# Security Group for Orchestrator
+# Security Group for Or
   OrSecGroup3:
     Type: "AWS::EC2::SecurityGroup"
     Properties:
@@ -142,7 +142,7 @@ Resources:
         GroupId:
           Ref: "OrSecGroup3"
 
-# Redis security group
+# Red security group
   RedSecGroup4:
     Type: "AWS::EC2::SecurityGroup"
     Properties: 
